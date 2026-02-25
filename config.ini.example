@@ -1,0 +1,10 @@
+#
+#   Default config
+#
+[settings]
+input_folder = select an input folder
+output_folder = select an output folder
+use_ner = true
+use_llm = false
+max_retries = 5
+
