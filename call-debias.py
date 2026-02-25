@@ -1,6 +1,8 @@
 import time
 import json
+import logging
 import requests
+import functools
 import configparser
 from pathlib import Path
 from reportlab.lib import colors
@@ -9,7 +11,19 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
+# --- Init logging ---
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    filename="debias.log",
+    encoding="utf-8",
+    filemode="w+",
+    level=logging.DEBUG,
+    format="%(asctime)s - %(module)s - %(levelname)s: %(message)s",
+)
+print = functools.partial(print, flush=True)
+
 # --- Load config ---
+logger.info("Parsing settings...")
 config = configparser.ConfigParser()
 config.read("config.ini")
 
@@ -17,19 +31,20 @@ settings = config["settings"]
 INPUT_FOLDER = Path(settings["INPUT_FOLDER"])
 OUTPUT_FOLDER = Path(settings["OUTPUT_FOLDER"])
 MAX_RETRIES = int(settings["MAX_RETRIES"])
-USE_NER = config.getboolean('settings', 'USE_NER')
-USE_LLM = config.getboolean('settings', 'USE_LLM')
+USE_NER = config.getboolean("settings", "USE_NER")
+USE_LLM = config.getboolean("settings", "USE_LLM")
 SUPPORTED_LANGUAGES = {"nl", "en", "de", "it", "fr"}
 
 API_URL = " https://debias-api.ails.ece.ntua.gr/simple"  # Replace with your API URL
 
 
 def call_api(values: list, language: str) -> requests.Response:
+    logger.info("Calling De-bias API.")
     payload = {
         "language": language,
         "useNER": USE_NER,
         "useLLM": USE_LLM,
-        "values": values
+        "values": values,
     }
     response = requests.post(API_URL, json=payload)
     response.raise_for_status()
@@ -37,6 +52,7 @@ def call_api(values: list, language: str) -> requests.Response:
 
 
 def generate_pdf_report(file_path: Path, response_text: str) -> None:
+    logger.info(f"Generating PDF for {file_path.name}")
     results = json.loads(response_text).get("results", [])
 
     # Filter to only entries with non-empty tags
@@ -46,9 +62,14 @@ def generate_pdf_report(file_path: Path, response_text: str) -> None:
         return
 
     pdf_path = OUTPUT_FOLDER / file_path.with_suffix(".pdf").name
-    doc = SimpleDocTemplate(str(pdf_path), pagesize=landscape(A4),
-                            leftMargin=15*mm, rightMargin=15*mm,
-                            topMargin=15*mm, bottomMargin=15*mm)
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=landscape(A4),
+        leftMargin=15 * mm,
+        rightMargin=15 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+    )
     styles = getSampleStyleSheet()
     styles["Normal"].fontSize = 8
     styles["Normal"].leading = 11
@@ -111,9 +132,12 @@ def generate_pdf_report(file_path: Path, response_text: str) -> None:
 
     story.append(table)
     doc.build(story)
+    logger.info(f"[{file_path.name}] PDF report written to {pdf_path}")
     print(f"[{file_path.name}] PDF report written to {pdf_path}")
 
+
 def process_file(file_path: Path, language: str) -> None:
+    logger.info(f"Processing started for {file_path.name}")
     output_path = OUTPUT_FOLDER / file_path.name
 
     values = [
@@ -132,20 +156,27 @@ def process_file(file_path: Path, language: str) -> None:
             print(
                 f"[{language}/{file_path.name}] Success. Output written to {output_path}"
             )
+            logger.info(
+                f"[{language}/{file_path.name}] Success. Output written to {output_path}"
+            )
             return
 
         except requests.RequestException as e:
-            print(f"[{language}/{file_path.name}] Attempt {attempt} failed: {e}")
+            logger.warning(f"Error calling API for {file_path.name}: {e}")
+            print(f"[{language}/{file_path.name}] Attempt {attempt} failed")
             if attempt < MAX_RETRIES:
                 wait = 2**attempt
                 print(f"[{language}/{file_path.name}] Retrying in {wait}s...")
                 time.sleep(wait)
-
+    logger.error(
+        f"Calling API for {file_path.name} failed after all {MAX_RETRIES} attempts."
+    )
     print(f"[{language}/{file_path.name}] All {MAX_RETRIES} attempts failed. Skipping.")
 
 
 def main():
-    print("Staring processing...")
+    logger.info("Starting processing...")
+    print("Starting processing...")
     if not INPUT_FOLDER.exists():
         raise FileNotFoundError(f"Input folder not found: {INPUT_FOLDER}")
     OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
@@ -162,6 +193,8 @@ def main():
         for file_path in files:
             process_file(file_path, lang_folder.name)
     print("DONE. Processing finished.")
+    logger.info("DONE. Processing finished.")
+
 
 if __name__ == "__main__":
     main()
