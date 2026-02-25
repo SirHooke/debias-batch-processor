@@ -1,3 +1,4 @@
+import sys
 import time
 import json
 import logging
@@ -21,11 +22,12 @@ logging.basicConfig(
     format="%(asctime)s - %(module)s - %(levelname)s: %(message)s",
 )
 print = functools.partial(print, flush=True)
+BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 
 # --- Load config ---
 logger.info("Parsing settings...")
 config = configparser.ConfigParser()
-config.read("config.ini")
+config.read(BASE_DIR / "config.ini")
 
 settings = config["settings"]
 INPUT_FOLDER = Path(settings["INPUT_FOLDER"])

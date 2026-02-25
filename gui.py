@@ -1,10 +1,12 @@
 import configparser
-import functools
 import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
+import io
+import contextlib
+import traceback
+import call_debias
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -61,29 +63,37 @@ def open_folder(path: str) -> None:
 
 class ProcessorThread(QThread):
     line_ready = pyqtSignal(str)
-    finished = pyqtSignal(bool)  # True = success
+    finished = pyqtSignal(bool)
 
     def run(self):
-        try:
-            process = subprocess.Popen(
-                [sys.executable, "-u", "call-debias.py"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            fatal = False
-            for line in process.stdout:
-                stripped = line.rstrip()
-                self.line_ready.emit(stripped)
-                if "error" in stripped.lower() or "fatal" in stripped.lower():
-                    fatal = True
-            process.wait()
-            self.finished.emit(process.returncode == 0 and not fatal)
-        except Exception as e:
-            self.line_ready.emit(f"Failed to launch: {e}")
-            self.finished.emit(False)
+        success = True
 
+        # Custom stream object to forward writes
+        class StreamEmitter(io.StringIO):
+            def __init__(self, signal):
+                super().__init__()
+                self.signal = signal
+
+            def write(self, msg):
+                if msg.strip():
+                    self.signal.emit(msg.rstrip())
+                super().write(msg)
+
+        stdout_stream = StreamEmitter(self.line_ready)
+        stderr_stream = StreamEmitter(self.line_ready)
+
+        try:
+            with contextlib.redirect_stdout(stdout_stream), \
+                 contextlib.redirect_stderr(stderr_stream):
+
+                call_debias.main()
+
+        except Exception:
+            success = False
+            err = traceback.format_exc()
+            self.line_ready.emit(err)
+
+        self.finished.emit(success)
 
 # --- Main window ---
 
