@@ -138,7 +138,7 @@ def generate_pdf_report(file_path: Path, response_text: str) -> None:
 
 def process_file(file_path: Path, language: str) -> None:
     logger.info(f"Processing started for {file_path.name}")
-    output_path = OUTPUT_FOLDER / file_path.name
+    output_path = OUTPUT_FOLDER / (file_path.stem + '-output.json')
 
     values = [
         line
