@@ -1,12 +1,21 @@
 import configparser
+import functools
+import os
 import subprocess
 import sys
 import threading
-import os
 from pathlib import Path
-from nicegui import ui, app
+
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (
+    QApplication, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QMainWindow, QPushButton, QSpinBox, QTextEdit,
+    QVBoxLayout, QWidget, QCheckBox, QSizePolicy
+)
 
 CONFIG_PATH = "config.ini"
+
 
 # --- Config helpers ---
 
@@ -38,7 +47,6 @@ def save_config(settings: dict) -> None:
 
 
 def open_folder(path: str) -> None:
-    """Open a folder in the OS file explorer."""
     resolved = str(Path(path).resolve())
     if sys.platform == "win32":
         os.startfile(resolved)
@@ -48,162 +56,203 @@ def open_folder(path: str) -> None:
         subprocess.Popen(["xdg-open", resolved])
 
 
-def pick_folder(current: str, callback) -> None:
-    """Open a native folder picker via tkinter (runs in a thread to avoid blocking)."""
-    def _pick():
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        chosen = filedialog.askdirectory(initialdir=current or ".")
-        root.destroy()
-        if chosen:
-            callback(chosen)
-    threading.Thread(target=_pick, daemon=True).start()
+# --- Worker thread ---
+
+class ProcessorThread(QThread):
+    line_ready = pyqtSignal(str)
+    finished = pyqtSignal(bool)  # True = success
+
+    def run(self):
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-u", "call-debias.py"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            fatal = False
+            for line in process.stdout:
+                stripped = line.rstrip()
+                self.line_ready.emit(stripped)
+                if "error" in stripped.lower() or "fatal" in stripped.lower():
+                    fatal = True
+            process.wait()
+            self.finished.emit(process.returncode == 0 and not fatal)
+        except Exception as e:
+            self.line_ready.emit(f"Failed to launch: {e}")
+            self.finished.emit(False)
 
 
-# --- Build UI ---
+# --- Main window ---
 
-settings = load_config()
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("De-bias Processor")
+        self.setMinimumWidth(700)
+        self.settings = load_config()
+        self._build_ui()
 
-ui.dark_mode().enable()
+    def _build_ui(self):
+        root = QWidget()
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
 
-with ui.column().classes("w-full max-w-4xl mx-auto p-6 gap-6"):
+        layout.addWidget(self._build_settings_group())
+        layout.addWidget(self._build_run_group())
 
-    ui.label("De-bias Processor").classes("text-2xl font-bold")
+    # --- Settings group ---
 
-    # --- Settings card ---
-    with ui.card().classes("w-full"):
-        ui.label("Settings").classes("text-lg font-semibold mb-2")
+    def _build_settings_group(self) -> QGroupBox:
+        group = QGroupBox("Settings")
+        vbox = QVBoxLayout(group)
 
         # Input folder
-        with ui.row().classes("items-center gap-2 w-full"):
-            ui.label("Input folder").classes("w-28 shrink-0")
-            input_folder_field = ui.input(value=settings["input_folder"]).classes("flex-1")
-            ui.button("Select", icon="folder_open",
-                      on_click=lambda: pick_folder(
-                          input_folder_field.value,
-                          lambda p: input_folder_field.set_value(p)
-                      )).props("flat dense")
-            ui.button("Open", icon="launch",
-                      on_click=lambda: open_folder(input_folder_field.value)).props("flat dense")
+        self.input_field = QLineEdit(self.settings["input_folder"])
+        vbox.addWidget(QLabel("Input folder"))
+        vbox.addLayout(self._folder_row(self.input_field))
 
         # Output folder
-        with ui.row().classes("items-center gap-2 w-full"):
-            ui.label("Output folder").classes("w-28 shrink-0")
-            output_folder_field = ui.input(value=settings["output_folder"]).classes("flex-1")
-            ui.button("Select", icon="folder_open",
-                      on_click=lambda: pick_folder(
-                          output_folder_field.value,
-                          lambda p: output_folder_field.set_value(p)
-                      )).props("flat dense")
-            ui.button("Open", icon="launch",
-                      on_click=lambda: open_folder(output_folder_field.value)).props("flat dense")
-
-        ui.separator()
+        self.output_field = QLineEdit(self.settings["output_folder"])
+        vbox.addWidget(QLabel("Output folder"))
+        vbox.addLayout(self._folder_row(self.output_field))
 
         # Toggles
-        with ui.row().classes("gap-8 items-center"):
-            use_ner_toggle = ui.switch("Use NER", value=settings["use_ner"])
-            use_llm_toggle = ui.switch("Use LLM", value=settings["use_llm"])
+        toggle_row = QHBoxLayout()
+        self.ner_checkbox = QCheckBox("Use NER")
+        self.ner_checkbox.setChecked(self.settings["use_ner"])
+        self.llm_checkbox = QCheckBox("Use LLM")
+        self.llm_checkbox.setChecked(self.settings["use_llm"])
+        toggle_row.addWidget(self.ner_checkbox)
+        toggle_row.addWidget(self.llm_checkbox)
+        toggle_row.addStretch()
+        vbox.addLayout(toggle_row)
 
         # Max retries
-        with ui.row().classes("items-center gap-4"):
-            ui.label("Max retries")
-            max_retries_field = ui.number(value=settings["max_retries"], min=1, max=20, precision=0).classes("w-24")
+        retry_row = QHBoxLayout()
+        retry_row.addWidget(QLabel("Max retries"))
+        self.retries_spin = QSpinBox()
+        self.retries_spin.setRange(1, 20)
+        self.retries_spin.setValue(self.settings["max_retries"])
+        self.retries_spin.setFixedWidth(70)
+        retry_row.addWidget(self.retries_spin)
+        retry_row.addStretch()
+        vbox.addLayout(retry_row)
 
-        ui.separator()
+        # Save button
+        save_btn = QPushButton("Save config")
+        save_btn.setFixedWidth(120)
+        save_btn.clicked.connect(self._on_save)
+        vbox.addWidget(save_btn)
 
-        def on_save():
-            save_config({
-                "input_folder":  input_folder_field.value,
-                "output_folder": output_folder_field.value,
-                "use_ner":       use_ner_toggle.value,
-                "use_llm":       use_llm_toggle.value,
-                "max_retries":   int(max_retries_field.value),
-            })
-            ui.notify("Config saved.", type="positive")
+        return group
 
-        ui.button("Save config", icon="save", on_click=on_save).props("outline")
+    def _folder_row(self, field: QLineEdit) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(field)
+        select_btn = QPushButton("Select…")
+        select_btn.setFixedWidth(80)
+        select_btn.clicked.connect(lambda: self._pick_folder(field))
+        open_btn = QPushButton("Open")
+        open_btn.setFixedWidth(60)
+        open_btn.clicked.connect(lambda: open_folder(field.text()))
+        row.addWidget(select_btn)
+        row.addWidget(open_btn)
+        return row
 
-    # --- Run card ---
-    with ui.card().classes("w-full"):
-        with ui.row().classes("items-center justify-between w-full"):
-            ui.label("Run").classes("text-lg font-semibold")
+    def _pick_folder(self, field: QLineEdit) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Select folder", field.text())
+        if chosen:
+            field.setText(chosen)
 
-            # Status indicator
-            with ui.row().classes("items-center gap-2"):
-                status_label = ui.label("Idle").classes("text-sm text-gray-400")
-                spinner = ui.spinner(size="sm").classes("hidden")
-                status_dot = ui.icon("circle", size="sm").classes("text-gray-400")
+    def _on_save(self) -> None:
+        save_config(self._current_settings())
+        self.statusBar().showMessage("Config saved.", 3000)
 
-        log_area = (
-            ui.log()
-            .classes("w-full h-64 font-mono text-xs")
+    def _current_settings(self) -> dict:
+        return {
+            "input_folder":  self.input_field.text(),
+            "output_folder": self.output_field.text(),
+            "use_ner":       self.ner_checkbox.isChecked(),
+            "use_llm":       self.llm_checkbox.isChecked(),
+            "max_retries":   self.retries_spin.value(),
+        }
+
+    # --- Run group ---
+
+    def _build_run_group(self) -> QGroupBox:
+        group = QGroupBox("Run")
+        vbox = QVBoxLayout(group)
+
+        # Status row
+        status_row = QHBoxLayout()
+        self.status_indicator = QLabel("●")
+        self.status_indicator.setStyleSheet("color: grey; font-size: 18px;")
+        self.status_label = QLabel("Idle")
+        status_row.addWidget(self.status_indicator)
+        status_row.addWidget(self.status_label)
+        status_row.addStretch()
+        vbox.addLayout(status_row)
+
+        # Log output
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFontFamily("Courier New")
+        self.log_view.setFontPointSize(9)
+        self.log_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log_view.setMinimumHeight(250)
+        vbox.addWidget(self.log_view)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        self.start_btn = QPushButton("▶  Start")
+        self.start_btn.setFixedWidth(100)
+        self.start_btn.clicked.connect(self._on_start)
+        exit_btn = QPushButton("Exit")
+        exit_btn.setFixedWidth(80)
+        exit_btn.setStyleSheet("color: red;")
+        exit_btn.clicked.connect(self.close)
+        btn_row.addWidget(self.start_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(exit_btn)
+        vbox.addLayout(btn_row)
+
+        return group
+
+    def _set_status(self, state: str) -> None:
+        colours = {"idle": "grey", "running": "orange", "done": "green", "error": "red"}
+        labels  = {"idle": "Idle", "running": "Running…", "done": "Done", "error": "Error"}
+        self.status_indicator.setStyleSheet(
+            f"color: {colours[state]}; font-size: 18px;"
         )
+        self.status_label.setText(labels[state])
 
-        def set_status(state: str) -> None:
-            """state: idle | running | done | error"""
-            if state == "idle":
-                spinner.classes("hidden", remove="")
-                status_dot.classes("text-gray-400", remove="text-green-500 text-red-500 hidden")
-                status_label.set_text("Idle")
-            elif state == "running":
-                spinner.classes(remove="hidden")
-                status_dot.classes("hidden", remove="")
-                status_label.set_text("Running…")
-            elif state == "done":
-                spinner.classes("hidden", remove="")
-                status_dot.classes("text-green-500", remove="text-gray-400 text-red-500 hidden")
-                status_label.set_text("Done")
-            elif state == "error":
-                spinner.classes("hidden", remove="")
-                status_dot.classes("text-red-500", remove="text-gray-400 text-green-500 hidden")
-                status_label.set_text("Error")
+    def _on_start(self) -> None:
+        self._on_save()
+        self.log_view.clear()
+        self._set_status("running")
+        self.start_btn.setEnabled(False)
 
-        with ui.row().classes("gap-2"):
-            start_button = ui.button("Start", icon="play_arrow")
-            ui.button("Exit", icon="power_settings_new", color="negative",
-                    on_click=lambda: (ui.navigate.to("about:blank"), app.shutdown())
-                    ).props("outline")
+        self.thread = ProcessorThread()
+        self.thread.line_ready.connect(self._append_log)
+        self.thread.finished.connect(self._on_finished)
+        self.thread.start()
 
-        def run_processor() -> None:
-            # Persist current settings before running
-            on_save()
+    def _append_log(self, line: str) -> None:
+        self.log_view.append(line)
 
-            log_area.clear()
-            set_status("running")
-            start_button.disable()
-
-            def _run():
-                try:
-                    process = subprocess.Popen(
-                        [sys.executable, "-u", "call-debias.py"],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        bufsize=1,
-                    )
-                    fatal = False
-                    for line in process.stdout:
-                        log_area.push(line.rstrip())
-                        if "exception" in line.lower() or "error" in line.lower():
-                            fatal = True
-                    process.wait()
-                    if process.returncode != 0 or fatal:
-                        set_status("error")
-                    else:
-                        set_status("done")
-                except Exception as e:
-                    log_area.push(f"Failed to launch: {e}")
-                    set_status("error")
-                finally:
-                    start_button.enable()
-
-            threading.Thread(target=_run, daemon=True).start()
-
-        start_button.on_click(run_processor)
+    def _on_finished(self, success: bool) -> None:
+        self._set_status("done" if success else "error")
+        self.start_btn.setEnabled(True)
 
 
-ui.run(title="De-bias Processor", reload=False)
+# --- Entry point ---
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
