@@ -1,4 +1,7 @@
 *.csv
 *.json
 *.pdf
-.venv/*pip sint
+.venv/*
+dist/*
+build/*
+*.spec
