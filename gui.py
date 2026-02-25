@@ -10,9 +10,10 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QPushButton, QSpinBox, QTextEdit,
+    QLineEdit, QMainWindow, QPushButton, QSpinBox, QTabWidget, QTextEdit,
     QVBoxLayout, QWidget, QCheckBox, QSizePolicy
 )
+from analytics.dashboard_widget import AnalyticsDashboard
 
 CONFIG_PATH = "config.ini"
 
@@ -92,17 +93,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("De-bias Processor")
         self.setMinimumWidth(700)
         self.settings = load_config()
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
         self._build_ui()
 
     def _build_ui(self):
-        root = QWidget()
-        self.setCentralWidget(root)
-        layout = QVBoxLayout(root)
+    # --- batch tab ---
+        batch = QWidget()
+        layout = QVBoxLayout(batch)
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
 
         layout.addWidget(self._build_settings_group())
         layout.addWidget(self._build_run_group())
+        self.tabs.addTab(batch, "Batch Processing")
+    # --- analytics tab ---
+        analytics_tab = AnalyticsDashboard("output")
+        self.tabs.addTab(analytics_tab, "Analytics")
 
     # --- Settings group ---
 
