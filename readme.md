@@ -1,4 +1,4 @@
-# De-bias Batch Processor
+# De-bias Batch Processor ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 A Python tool for batch processing CSV files through the De-bias API. It annotates text values for potentially biased language, writes the API responses as JSON, and generates PDF reports highlighting flagged entries.
 ---
